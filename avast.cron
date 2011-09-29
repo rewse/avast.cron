@@ -1,0 +1,124 @@
+#!/bin/sh
+#####################################################################
+# @(#) avast! scanning by batch processing
+#
+# Author: Tats Shibata
+# License: http://rewse.jp/license/2011.01.txt
+#
+# Copyright (c) 2011, Rewse Lab. All rights reserved.
+#####################################################################
+
+# {{{ Constants needed to change
+
+# Mail to
+MAIL_TO=root
+
+# Excluded paths
+EXCLUDE_PATHS="/var/bak /var/lib/xen/images /var/tm"
+
+# }}}
+#####################################################################
+# {{{ Constants
+
+# Scanned target directory
+TARGET_DIR=/
+
+# Add always exlucded paths
+EXCLUDE_PATHS="/dev /lost+found /media /mnt /proc /selinux /srv /sys $EXCLUDE_PATHS"
+
+# Scanned target directores file excluding EXCLUDE_PATHS
+TARGET_DIRS_FILE=/tmp/targetdirs.txt
+
+# Log for avast
+AVAST_LOG=/var/log/avast.log
+
+# Alert mail title
+MAIL_TITLE="[`hostname -s`] WARNING: Found out viruses"
+
+# Temporary file for mail message
+MSGFILE=/tmp/avast.msg
+
+# }}}
+#####################################################################
+# {{{ remove_tmpfile()
+
+remove_tmpfile() {
+  rm -f $MSGFILE*
+  rm -f $TARGET_DIRS_FILE*
+}
+
+# }}}
+# {{{ make_target_dirs()
+
+make_target_dirs() {
+  for EXCLUDE_PATH in $EXCLUDE_PATHS; do
+    while [ "$PARENT_PATH" != "/" ]; do
+      PARENT_PATH=`dirname $EXCLUDE_PATH`
+      ls -1 $PARENT_PATH 2&gt; /dev/null | sed "s|^|$PARENT_PATH/|" |
+        grep -v "^/*$EXCLUDE_PATH\$" >> $TARGET_DIRS_FILE
+      EXCLUDE_PATH=$PARENT_PATH
+    done
+
+    PARENT_PATH=
+  done
+
+  cat $TARGET_DIRS_FILE | sort | uniq |
+    sed 's|//|/|g' > $TARGET_DIRS_FILE.uniqed
+
+  for EXCLUDE_PATH in $EXCLUDE_PATHS; do
+    while [ "$PARENT_PATH" != "/" ]; do
+      PARENT_PATH=`dirname $EXCLUDE_PATH`
+      cat $TARGET_DIRS_FILE.uniqed |
+        grep -v "^$EXCLUDE_PATH\$" >> $TARGET_DIRS_FILE.excluded
+
+      EXCLUDE_PATH=$PARENT_PATH
+      mv $TARGET_DIRS_FILE.excluded $TARGET_DIRS_FILE.uniqed
+    done
+
+    PARENT_PATH=
+  done
+
+  mv $TARGET_DIRS_FILE.uniqed $TARGET_DIRS_FILE
+}
+
+# }}}
+# {{{ Trap
+
+trap 'remove_tmpfile; exit 1' 1 2 3 15
+
+# }}}
+# {{{ Update the virus database
+
+avast-update 2>> $AVAST_LOG
+
+# }}}
+# {{{ Run avast
+
+# Remove temporary files for initialize
+remove_tmpfile
+
+# Make a taget directory list
+make_target_dirs
+
+# Run avscan and send an alert mail if viruses were found out
+for TARGET_DIR in `cat $TARGET_DIRS_FILE`; do
+  avast --report=$AVAST_LOG $TARGET_DIR 2>&1 >> $MSGFILE
+done
+
+grep "infected by" $MSGFILE > $MSGFILE.infected
+
+# Send an alert mail if there is a mail message
+if [ -s $MSGFILE.infected ]; then
+  cat <<! | mail -s "$MAIL_TITLE" "$MAIL_TO"
+### WARNING ###
+
+Viruses were found out. Check $AVAST_LOG
+
+`cat $MSGFILE.infected`
+!
+fi
+
+# Remove temporary files for finish
+remove_tmpfile
+
+# }}}
